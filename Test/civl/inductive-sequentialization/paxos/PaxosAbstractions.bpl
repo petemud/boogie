@@ -46,7 +46,7 @@ returns ({:pending_async "A_Vote", "A_Conclude"} PAs:[PA]int)
 modifies voteInfo, pendingAsyncs;
 {
   var {:pool "Round"} maxRound: int;
-  var maxValue: Value;
+  var {:pool "MaxValue"} maxValue: Value;
   var {:pool "NodeSet"} ns: NodeSet;
 
   assert Round(r);
@@ -59,23 +59,24 @@ modifies voteInfo, pendingAsyncs;
   assert (forall r': Round, n': Node, p': Permission :: r' <= r ==> pendingAsyncs[A_Join(r', n', p')] == 0);
   assert (forall r': Round, p': [Permission]bool :: r' < r ==> pendingAsyncs[A_Propose(r', p')] == 0);
   assert (forall r': Round, n': Node, v': Value, p': Permission :: r' <= r ==> pendingAsyncs[A_Vote(r', n', v', p')] == 0);
-
-  // Hint for commutativity w.r.t. {Paxos, Propose}
-  assert
-    {:add_to_pool "Round", r, r-1}
-    {:add_to_pool "Node", 0}
-    ps[ConcludePerm(r)];
+  assert ps[ConcludePerm(r)];
   /**************************************************************************/
 
   assume
+    {:add_to_pool "MaxValue", maxValue}
+    {:add_to_pool "Round", r}
+    {:add_to_pool "Node", 0}
     {:add_to_pool "NodeSet", ns}
     true;
 
   if (*) {
     assume IsSubset(ns, joinedNodes[r]) && IsQuorum(ns);
-    maxRound := MaxRound(r, ns, voteInfo);
-    if (maxRound != 0)
-    {
+    if (*) {
+      assume (forall {:pool "Round"} r': Round :: Round(r') && r' < r && is#Some(voteInfo[r']) ==> IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[r']))));
+    } else {
+      assume {:add_to_pool "Round", maxRound} true;
+      assume Round(maxRound) && maxRound < r && is#Some(voteInfo[maxRound]) && !IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[maxRound])));
+      assume (forall {:pool "Round"} r': Round :: maxRound < r' && r' < r && is#Some(voteInfo[r']) ==> IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[r']))));
       maxValue := value#VoteInfo(t#Some(voteInfo[maxRound]));
     }
     voteInfo[r] := Some(VoteInfo(maxValue, NoNodes()));

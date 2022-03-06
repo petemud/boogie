@@ -17,7 +17,7 @@ returns ({:pending_async "A_Vote", "A_Conclude"} PAs:[PA]int)
 modifies voteInfo, pendingAsyncs;
 {
   var {:pool "Round"} maxRound: int;
-  var maxValue: Value;
+  var {:pool "MaxValue"} maxValue: Value;
   var {:pool "NodeSet"} ns: NodeSet;
 
   assert Round(r);
@@ -26,14 +26,19 @@ modifies voteInfo, pendingAsyncs;
   assert is#None(voteInfo[r]);
 
   assume
+    {:add_to_pool "MaxValue", maxValue}
+    {:add_to_pool "Round", r}
     {:add_to_pool "NodeSet", ns}
     true;
 
   if (*) {
     assume IsSubset(ns, joinedNodes[r]) && IsQuorum(ns);
-    maxRound := MaxRound(r, ns, voteInfo);
-    if (maxRound != 0)
-    {
+    if (*) {
+      assume (forall {:pool "Round"} r': Round :: Round(r') && r' < r && is#Some(voteInfo[r']) ==> IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[r']))));
+    } else {
+      assume {:add_to_pool "Round", maxRound} true;
+      assume Round(maxRound) && maxRound < r && is#Some(voteInfo[maxRound]) && !IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[maxRound])));
+      assume (forall {:pool "Round"} r': Round :: maxRound < r' && r' < r && is#Some(voteInfo[r']) ==> IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[r']))));
       maxValue := value#VoteInfo(t#Some(voteInfo[maxRound]));
     }
     voteInfo[r] := Some(VoteInfo(maxValue, NoNodes()));

@@ -426,28 +426,8 @@ namespace Microsoft.Boogie
 
         if (existsVarMap.Any())
         {
-          Trigger trigger = null;
-          if (trc.IsJoint)
-          {
-            var exprs = new List<Expr>();
-            foreach (var v in existsVarMap.Keys)
-            {
-              var orig = copyToOriginalVar[v];
-              if (v == varCopies[orig].First() && trc.triggers.ContainsKey(orig))
-              {
-                var f = trc.triggers[orig];
-                exprs.Add(ExprHelper.FunctionCall(Options, f, Expr.Ident(existsVarMap[v])));
-              }
-            }
-
-            if (exprs.Count == existsVarMap.Count)
-            {
-              trigger = new Trigger(Token.NoToken, true, exprs);
-            }
-          }
-
           TransitionRelationExpr = ExprHelper.ExistsExpr(
-            existsVarMap.Values.ToList<Variable>(), trigger, TransitionRelationExpr);
+            existsVarMap.Values.ToList<Variable>(), null, TransitionRelationExpr);
         }
       }
 

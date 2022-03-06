@@ -76,19 +76,6 @@ function {:inline} IsDisjoint(ns1:NodeSet, ns2:NodeSet) : bool {
   MapAnd(ns1, ns2) == MapConst(false)
 }
 
-// MaxRound(r, ns, voteInfo) returns the highest round less than r that some node in ns voted for.
-// If no node in ns has voted for a round less than r, then it returns 0.
-function MaxRound(r: Round, ns: NodeSet, voteInfo: [Round]Option VoteInfo): int;
-axiom (forall r: Round, ns: NodeSet, voteInfo: [Round]Option VoteInfo ::
-  Round(r) ==>
-  (
-    var ret := MaxRound(r, ns, voteInfo);
-    0 <= ret && ret < r &&
-    (forall r': Round :: ret < r' && r' < r && is#Some(voteInfo[r']) ==> IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[r'])))) &&
-    (Round(ret) ==> is#Some(voteInfo[ret]) && !IsDisjoint(ns, ns#VoteInfo(t#Some(voteInfo[ret]))))
-  )
-);
-
 function {:inline} JoinPermissions(r: Round) : [Permission]bool
 {
   (lambda p:Permission :: if (is#JoinPerm(p) && r#JoinPerm(p) == r) then true else false)
