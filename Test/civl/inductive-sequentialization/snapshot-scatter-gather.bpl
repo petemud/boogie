@@ -9,67 +9,124 @@ datatype StampedValue {
     StampedValue(ts: int, value: Value)
 } 
 
-datatype Permission {
-    Permission(tid: Tid, mem_index: int)
+// datatype Permission {
+//     Permission(tid: , mem_index: int)
+// }
+
+type Channel; // Send + Receive
+type ChannelPiece = Fraction (Loc Channel) ChannelOp; // Send or Receive piece
+type MemIndexPiece = Fraction ChannelPiece int; // Each mem index piece of Channel Piece
+
+type Snapshot = [int]StampedValue;
+
+datatype ChannelOp {
+    Send(),
+    Receive()
+}
+
+function {:inline} ChannelOps(): Set ChannelOp {
+  Set_Add(Set_Add(Set_Empty(), Send()), Receive())
+}
+
+
+
+function {:inline} IsSend(piece: ChannelPiece): bool {
+    piece == Fraction(piece->val, Send(), ChannelOps())
+}
+
+function {:inline} IsReceive(piece: ChannelPiece): bool {
+    piece == Fraction(piece->val, Receive(), ChannelOps())
+}
+
+function {:inline} ToSend(piece: ChannelPiece): ChannelPiece {
+    Fraction(piece->val, Send(), piece->ids)
 }
 
 const n: int;
 axiom n >= 1;
 
-var {:layer 0,2} mem: [int]StampedValue;
-var {:linear} {:layer 0,2} pSet: Set Permission;
-var {:layer 0,2} channels: [Tid](Option [int]StampedValue);
-var {:layer 0,1} snapshots: [Tid][int]StampedValue;  
+var {:layer 0,3} mem: Snapshot;
+var {:linear} {:layer 0,3} pSet: Set MemIndexPiece;
+// var {:layer 0,3} channels: [Tid](Option Snapshot);
+var {:layer 0,2} snapshots: [Loc Channel]Snapshot;  
+var {:linear} {:layer 0,3} contents: Map ChannelPiece Snapshot;// contains only Send pieces
 
-function {:inline} WholeTidPermission(tid: Tid): Set Permission {
-    Set((lambda {:pool "D"} x: Permission :: x->tid == tid && 1 <= x->mem_index && x->mem_index <= n))
+function {:inline} AllMemIndexPieces(s: ChannelPiece): Set MemIndexPiece {
+    Set((lambda {:pool "D"} x: MemIndexPiece :: x->val == s && x->ids == MemIndices() && Set_Contains(x->ids,x->id)))
 }
 
-async action {:layer 1} main_f(tid: Tid, {:linear_in} sps: Set Permission)
-refines {:IS_right} main_f' using Inv_f;
-modifies pSet;
-creates read_f;
-{
-    assume {:add_to_pool "A", 0, n} true;
-    assert sps == WholeTidPermission(tid);
-    assert channels[tid] == None();
-    call create_asyncs((lambda pa:read_f :: 1 <= pa->perm->val->mem_index && pa->perm->val->mem_index <= n && pa->perm->val->tid == tid));
+
+function {:inline} MemIndices(): Set int {
+    Set((lambda {:pool "E" } x: int :: 1 <= x && x <= n))
 }
 
-async action {:layer 2} main_f'(tid: Tid, {:linear_in} sps: Set Permission)
-modifies pSet, channels;
+
+atomic action {:layer 1,3} Send({:linear_in} one_s: One ChannelPiece, snapshot: Snapshot)
+modifies contents;
 {
-    var snapshot: [int]StampedValue;  
-    assume {:add_to_pool "A", 0, n} true;
-    assert sps == WholeTidPermission(tid);
-    assert channels[tid] == None();
-    assume (forall i:int :: 1 <= i && i <= n ==> (snapshot[i]->ts < mem[i]->ts  || snapshot[i]== mem[i]));
-    call Set_Put(pSet, sps);
-    call ChannelSend(tid, snapshot);
+    var {:linear} cell: Cell ChannelPiece Snapshot;
+    assert IsSend(one_s->val);
+    call cell := Cell_Pack(one_s, snapshot);
+    call Map_Put(contents, cell);
 }
 
-async action {:layer 1} {:exit_condition Set_IsSubset(WholeTidPermission(perm->val->tid), Set_Add(pSet, perm->val))} read_f({:linear_in} perm: One Permission)
-modifies snapshots, pSet, channels;
+right action {:layer 1,3} action_Receive({:linear} one_r: One ChannelPiece) returns ({:linear} one_s: One ChannelPiece, snapshot: Snapshot)
+modifies contents;
 {
-    var {:pool "K"} k:int;
-    var {:pool "V"} v:Value;
-    assert 1 <= perm->val->mem_index && perm->val->mem_index <=n;
-    assert channels[perm->val->tid] == None();
-    assume {:add_to_pool "A", 0, n} true;
+    var {:linear} cell: Cell ChannelPiece Snapshot;
+    var s: ChannelPiece;
+    assert IsReceive(one_r->val);
+    s := ToSend(one_r->val);
+    assume Map_Contains(contents, s);
+    call cell := Map_Get(contents, s);
+    call one_s, snapshot := Cell_Unpack(cell);
+}
+yield procedure {:layer 0} Receive({:linear} one_r: One ChannelPiece) returns ({:linear} one_s: One ChannelPiece, snapshot: Snapshot);
+refines action_Receive;
 
-    if (*) {
-        assume {:add_to_pool "K", mem[perm->val->mem_index]->ts, k} {:add_to_pool "V", mem[perm->val->mem_index]->value, v} true;
-        assume k < mem[perm->val->mem_index]->ts; 
-        snapshots[perm->val->tid][perm->val->mem_index]:= StampedValue(k, v);
-    } else {
-        snapshots[perm->val->tid][perm->val->mem_index]:= mem[perm->val->mem_index];
+yield procedure  {:layer 2} coordinator() returns (snapshot: [int]StampedValue)
+{
+    var {:linear} one_loc_channel: One (Loc Channel);
+    var {:linear} one_loc_channel_pieces: Set ChannelPiece;
+    var {:linear} s: ChannelPiece;
+    var {:linear} r: ChannelPiece;
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} one_r: One ChannelPiece;
+    var {:linear} sps: Set MemIndexPiece;
+    var snapshot': Snapshot;
+
+    call one_loc_channel := One_New();
+    call one_loc_channel_pieces := One_To_Fractions(one_loc_channel, ChannelOps());
+    s := Fraction(one_loc_channel->val, Send(), ChannelOps());
+    call one_s := One_Get(one_loc_channel_pieces, s);
+    r := Fraction(one_loc_channel->val, Receive(), ChannelOps());
+    call one_r := One_Get(one_loc_channel_pieces, r);
+
+    while (true)
+    invariant {:yields} true;
+    {
+        call sps:= One_To_Fractions(one_s, MemIndices());
+        async call main_f(one_s->val, sps);
+        
+        call Yield1(); call Yield2();
+
+        call one_s, snapshot := Receive(one_r); // right
+        call sps:= One_To_Fractions(one_s,  MemIndices()); //local
+        call main_s(one_s->val, sps);// 
+
+        call Yield1(); call Yield2();
+
+        call one_s, snapshot' := Receive(one_r); // right
+        if (snapshot == snapshot') {
+            return;
+        }
     }
-    call One_Put(pSet, perm);
-
-    if (Set_IsSubset(WholeTidPermission(perm->val->tid), pSet)) {
-        call ChannelSend(perm->val->tid, snapshots[perm->val->tid]);
-    }
 }
+
+yield invariant {:layer 1} Yield1();
+invariant true;
+yield invariant {:layer 2} Yield2();
+invariant true;
 
 atomic action {:layer 1,2} write(i: int,v: Value)
 modifies mem;
@@ -78,124 +135,196 @@ modifies mem;
     x := mem[i];
     mem[i] := StampedValue(x->ts + 1, v);
 }
+/////////////////////////////////////////////////////////////////////////////////////////////
 
-action {:layer 1} Inv_f(tid: Tid, {:linear_in} sps: Set Permission)
-modifies snapshots, pSet, channels;
+async action {:layer 1} action_main_f(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece)
+refines {:IS_right} main_f' using Inv_f;
+modifies pSet;
 creates read_f;
 {
-    var {:pool "A"} j: int;
-    var {:linear} sps': Set Permission;
-    var {:linear} done_set: Set Permission;
-    var choice: read_f;
-    assert sps == WholeTidPermission(tid);
-    assert channels[tid] == None();
-    assume {:add_to_pool "A", 0, j+1, n} 0 <= j && j <= n;
-    havoc snapshots;
-    assume (forall i:int :: 1 <= i && i <= j ==> (snapshots[tid][i]->ts < mem[i]->ts || snapshots[tid][i]== mem[i]));
+    assume {:add_to_pool "A", 0, n} true;
+    assert sps == AllMemIndexPieces(send);
+    // assert channels[tid] == None();
+    call create_asyncs((lambda pa:read_f :: pa->s == send && Set_Contains(sps, pa->perm->val)));
+}
+yield procedure {:layer 0} main_f(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece);
+refines action_main_f;
 
-    assume {:add_to_pool "D", Permission(tid, n)} true;
-    sps' := sps;
-    call done_set := Set_Get(sps', (lambda {:pool "D" } x: Permission :: x->tid == tid && 1 <= x->mem_index && x->mem_index <= j));
-  
-    call Set_Put(pSet, done_set);
-    if (j < n) {
-        choice := read_f(One(Permission(tid, j+1)));
-        assume {:add_to_pool "C", choice} true;
-        call create_asyncs((lambda {:pool "C" } pa:read_f :: j+1 <=  pa->perm->val->mem_index && pa->perm->val->mem_index <= n && pa->perm->val->tid == tid));
-        call set_choice(choice);
+async action {:layer 2,3} main_f'(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece)
+modifies pSet, contents;
+{
+    var snapshot: Snapshot;  
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} pieces: Set MemIndexPiece;
+
+    assume {:add_to_pool "A", 0, n} true;
+    assert sps == AllMemIndexPieces(send);
+    // assert channels[tid] == None();
+    assume (forall i:int :: 1 <= i && i <= n ==> (snapshot[i]->ts < mem[i]->ts || snapshot[i]== mem[i]));
+    // call Set_Put(pSet, sps);
+    // call Send(send, snapshot);
+    call pieces := Set_Get(pSet, AllMemIndexPieces(send)->val);
+    one_s := One(send);
+    call Fractions_To_One(one_s, MemIndices(), pieces);
+    call Send(one_s, snapshot);
+
+}
+
+async action {:layer 1} {:exit_condition Set_IsSubset(AllMemIndexPieces(s), Set_Add(pSet, perm->val))} read_f(s: ChannelPiece, {:linear_in} perm: One MemIndexPiece)
+modifies snapshots, pSet, contents;
+{
+    var {:pool "K"} k:int;
+    var {:pool "V"} v:Value;
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} pieces: Set MemIndexPiece;
+    assert 1 <= perm->val->id && perm->val->id <= n;
+    assume {:add_to_pool "A", 0, n} true;
+
+    if (*) {
+        assume {:add_to_pool "K", mem[perm->val->id]->ts, k} {:add_to_pool "V", mem[perm->val->id]->value, v} true;
+        assume k < mem[perm->val->id]->ts; 
+        snapshots[s->val][perm->val->id]:= StampedValue(k, v);
     } else {
-        call ChannelSend(tid, snapshots[tid]);
+        snapshots[s->val][perm->val->id]:= mem[perm->val->id];
+    }
+    call One_Put(pSet, perm);
+
+    if (Set_IsSubset(AllMemIndexPieces(s), pSet)) {
+        call pieces := Set_Get(pSet, AllMemIndexPieces(s)->val);
+        one_s := One(s);
+        call Fractions_To_One(one_s, MemIndices(), pieces);
+        call Send(one_s, snapshots[s->val]);
     }
 }
 
-action {:layer 1,2} ChannelSend(tid: Tid, snapshot: [int]StampedValue)
-modifies channels;
+action {:layer 1} Inv_f(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece)
+modifies snapshots, pSet, contents;
+creates read_f;
 {
-    assert Set_IsSubset(WholeTidPermission(tid), pSet);
-    assert channels[tid] == None();
-    channels[tid] := Some(snapshot);
+    var {:pool "A"} j: int;
+    var {:linear} sps': Set MemIndexPiece;
+    var {:linear} done_set: Set MemIndexPiece;
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} pieces: Set MemIndexPiece;
+    var choice: read_f;
+    
+    assert sps == AllMemIndexPieces(send);
+    // assert channels[tid] == None();
+    assume {:add_to_pool "A", 0, j+1, n} 0 <= j && j <= n;
+    havoc snapshots;
+    assume (forall i:int :: 1 <= i && i <= j ==> (snapshots[send->val][i]->ts < mem[i]->ts || snapshots[send->val][i]== mem[i]));
+
+    assume {:add_to_pool "D", Fraction(send, n, MemIndices())} true;
+
+    sps' := sps;
+    call done_set := Set_Get(sps', (lambda {:pool "D"} x: MemIndexPiece :: x->val == send && 1 <= x->id && x->id <= j && x->ids ==  MemIndices()));
+    call Set_Put(pSet, done_set);
+
+    if (j < n) {
+        choice := read_f(send, One(Fraction(send, j+1, MemIndices())));
+        assume {:add_to_pool "C", choice} true;
+        call create_asyncs((lambda {:pool "C" } pa:read_f :: pa->s == send && j+1 <= pa->perm->val->id && pa->perm->val->id <= n && pa->perm->val->val == send && pa->perm->val->ids == MemIndices()));
+        call set_choice(choice);
+    } else {
+        call pieces := Set_Get(pSet, AllMemIndexPieces(send)->val);
+        one_s := One(send);
+        call Fractions_To_One(one_s, MemIndices(), pieces);
+        call Send(one_s, snapshots[send->val]);
+    }
 }
 
-right action {:layer 1,2} ChannelReceive(tid: Tid) returns (snapshot: [int]StampedValue)
-modifies channels;
-{
-    assume channels[tid] != None();
-    snapshot := channels[tid]->t;
-    channels[tid] := None();
-}
+/////////////////////////////////////////////////////////////////////////////////////////////
 
-async action {:layer 1} main_s(tid: Tid, {:linear_in} sps: Set Permission)
-refines {:IS_left} main_s' using Inv_s;
+async action {:layer 1} action_main_s(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece)
+refines {:IS_right} main_s' using Inv_s;
 modifies pSet;
 creates read_s;
 {
     assume {:add_to_pool "A", 0, n} true;
-    assert sps == WholeTidPermission(tid);
-    assert channels[tid] == None();
-    call create_asyncs((lambda pa:read_s :: 1 <= pa->perm->val->mem_index && pa->perm->val->mem_index <= n && pa->perm->val->tid == tid));
+    assert sps == AllMemIndexPieces(send);
+    // assert channels[tid] == None();
+    call create_asyncs((lambda pa:read_s :: pa->s == send && Set_Contains(sps, pa->perm->val)));
 }
+yield procedure {:layer 0} main_s(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece);
+refines action_main_s;
 
-async action {:layer 2} main_s'(tid: Tid, {:linear_in} sps: Set Permission)
-modifies pSet, channels;
+async action {:layer 2,3} main_s'(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece)
+modifies pSet, contents;
 {
-    var snapshot: [int]StampedValue;  
+    var snapshot: Snapshot;  
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} pieces: Set MemIndexPiece;
+
     assume {:add_to_pool "A", 0, n} true;
-    assert sps == WholeTidPermission(tid);
-    assert channels[tid] == None();
-    assume (forall i:int :: 1 <= i && i <= n ==> (snapshot[i]->ts > mem[i]->ts  || snapshot[i]== mem[i]));
-    call Set_Put(pSet, sps);
-    call ChannelSend(tid, snapshot);
+    assert sps == AllMemIndexPieces(send);
+    // assert channels[tid] == None();
+    assume (forall i:int :: 1 <= i && i <= n ==> (snapshot[i]->ts > mem[i]->ts || snapshot[i]== mem[i]));
+    // call Set_Put(pSet, sps);
+    // call Send(send, snapshot);
+    call pieces := Set_Get(pSet, AllMemIndexPieces(send)->val);
+    one_s := One(send);
+    call Fractions_To_One(one_s, MemIndices(), pieces);
+    call Send(one_s, snapshot);
+
 }
 
-async left action {:layer 1} read_s({:linear_in} perm: One Permission)
-modifies snapshots, pSet, channels;
+async left action {:layer 1} read_s(s: ChannelPiece, {:linear_in} perm: One MemIndexPiece)
+modifies snapshots, pSet, contents;
 {
     var {:pool "K"} k:int;
     var {:pool "V"} v:Value;
-    assert 1 <= perm->val->mem_index && perm->val->mem_index <=n;
-    assert channels[perm->val->tid] == None();
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} pieces: Set MemIndexPiece;
+    assert 1 <= perm->val->id && perm->val->id <= n;
     assume {:add_to_pool "A", 0, n} true;
 
     if (*) {
-        assume {:add_to_pool "K", mem[perm->val->mem_index]->ts, k} {:add_to_pool "V", mem[perm->val->mem_index]->value, v} true;
-        assume k > mem[perm->val->mem_index]->ts; 
-        snapshots[perm->val->tid][perm->val->mem_index]:= StampedValue(k, v);
+        assume {:add_to_pool "K", mem[perm->val->id]->ts, k} {:add_to_pool "V", mem[perm->val->id]->value, v} true;
+        assume k > mem[perm->val->id]->ts; 
+        snapshots[s->val][perm->val->id]:= StampedValue(k, v);
     } else {
-        snapshots[perm->val->tid][perm->val->mem_index]:= mem[perm->val->mem_index];
+        snapshots[s->val][perm->val->id]:= mem[perm->val->id];
     }
     call One_Put(pSet, perm);
 
-    if (Set_IsSubset(WholeTidPermission(perm->val->tid), pSet)) {
-        call ChannelSend(perm->val->tid, snapshots[perm->val->tid]);
+    if (Set_IsSubset(AllMemIndexPieces(s), pSet)) {
+        call pieces := Set_Get(pSet, AllMemIndexPieces(s)->val);
+        one_s := One(s);
+        call Fractions_To_One(one_s, MemIndices(), pieces);
+        call Send(one_s, snapshots[s->val]);
     }
 }
 
-action {:layer 1} Inv_s(tid: Tid, {:linear_in} sps: Set Permission)
-modifies snapshots, pSet, channels;
+action {:layer 1} Inv_s(send: ChannelPiece, {:linear_in} sps: Set MemIndexPiece)
+modifies snapshots, pSet, contents;
 creates read_s;
 {
     var {:pool "A"} j: int;
-    var {:linear} sps': Set Permission;
-    var {:linear} done_set: Set Permission;
+    var {:linear} sps': Set MemIndexPiece;
+    var {:linear} done_set: Set MemIndexPiece;
+    var {:linear} one_s: One ChannelPiece;
+    var {:linear} pieces: Set MemIndexPiece;
     var choice: read_s;
-    assert sps == WholeTidPermission(tid);
-    assert channels[tid] == None();
+    
+    assert sps == AllMemIndexPieces(send);
     assume {:add_to_pool "A", 0, j+1, n} 0 <= j && j <= n;
     havoc snapshots;
-    assume (forall i:int :: 1 <= i && i <= j ==> (snapshots[tid][i]->ts > mem[i]->ts || snapshots[tid][i]== mem[i]));
+    assume (forall i:int :: 1 <= i && i <= j ==> (snapshots[send->val][i]->ts > mem[i]->ts || snapshots[send->val][i]== mem[i]));
 
-    assume {:add_to_pool "D", Permission(tid, n)} true;
+    assume {:add_to_pool "D", Fraction(send, n, MemIndices())} true;
     sps' := sps;
-    call done_set := Set_Get(sps', (lambda {:pool "D" } x: Permission :: x->tid == tid && 1 <= x->mem_index && x->mem_index <= j));
-  
+    call done_set := Set_Get(sps', (lambda {:pool "D"} x: MemIndexPiece :: x->val == send && 1 <= x->id && x->id <= j && x->ids ==  MemIndices()));
     call Set_Put(pSet, done_set);
+
     if (j < n) {
-        choice := read_s(One(Permission(tid, j+1)));
+        choice := read_s(send, One(Fraction(send, j+1, MemIndices())));
         assume {:add_to_pool "C", choice} true;
-        call create_asyncs((lambda {:pool "C" } pa:read_s :: j+1 <=  pa->perm->val->mem_index && pa->perm->val->mem_index <= n && pa->perm->val->tid == tid));
+        call create_asyncs((lambda {:pool "C" } pa:read_s :: pa->s == send && j+1 <= pa->perm->val->id && pa->perm->val->id <= n && pa->perm->val->val == send && pa->perm->val->ids == MemIndices()));
         call set_choice(choice);
     } else {
-        call ChannelSend(tid, snapshots[tid]);
+        call pieces := Set_Get(pSet, AllMemIndexPieces(send)->val);
+        one_s := One(send);
+        call Fractions_To_One(one_s, MemIndices(), pieces);
+        call Send(one_s, snapshots[send->val]);
     }
 }
-
