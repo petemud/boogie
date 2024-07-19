@@ -327,7 +327,7 @@ modifies contents;
 
 async left action {:layer 1} read_s({:linear_in} perm: One MemIndexPiece)
 modifies snapshots, pset, contents;
-requires IsSendSecond(perm->val->val) && IsValidMemIndexPiece(perm->val);
+requires {:add_to_pool "SV_read_s", mem[perm->val->id]} IsSendSecond(perm->val->val) && IsValidMemIndexPiece(perm->val);
 {
     var {:pool "SV_read_s"} sv: StampedValue;
     var s: ChannelPiece;
