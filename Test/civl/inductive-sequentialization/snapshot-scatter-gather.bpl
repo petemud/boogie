@@ -203,7 +203,7 @@ creates read_f;
     assert sps == AllMemIndexPieces(s);
     assume {:add_to_pool "MemIndices", 0, NumMemIndices} true;
     assume {:add_to_pool "Snapshot", snapshots[s]} true;
-    call create_asyncs((lambda pa: read_f :: Set_Contains(sps, pa->perm->val)));
+    call {:linear sps} create_asyncs((lambda pa: read_f :: Set_Contains(sps, pa->perm->val)));
 }
 yield procedure {:layer 0} _main_f(s: ChannelPiece, {:linear_in} sps: Set MemIndexPiece);
 refines main_f;
@@ -283,7 +283,7 @@ creates read_f;
     if (j < NumMemIndices) {
         choice := read_f(One(Fraction(s, j+1, MemIndices())));
         assume {:add_to_pool "ReadPendingAsyncs", choice} true;
-        call create_asyncs(
+        call {:linear sps'} create_asyncs(
             (lambda {:pool "ReadPendingAsyncs"} pa: read_f ::
                 j+1 <= pa->perm->val->id && pa->perm->val->id <= NumMemIndices && pa->perm->val->val == s && pa->perm->val->ids == MemIndices()));
         call set_choice(choice);
@@ -305,7 +305,7 @@ creates read_s;
     assert sps == AllMemIndexPieces(s);
     assume {:add_to_pool "MemIndices", 0, NumMemIndices} true;
     assume {:add_to_pool "Snapshot", snapshots[s]} true;
-    call create_asyncs((lambda pa: read_s :: Set_Contains(sps, pa->perm->val)));
+    call {:linear sps} create_asyncs((lambda pa: read_s :: Set_Contains(sps, pa->perm->val)));
 }
 yield procedure {:layer 0} main_s(s: ChannelPiece, {:linear_in} sps: Set MemIndexPiece);
 refines action_main_s;
@@ -382,7 +382,7 @@ creates read_s;
     if (j < NumMemIndices) {
         choice := read_s(One(Fraction(s, j+1, MemIndices())));
         assume {:add_to_pool "ReadPendingAsyncs", choice} true;
-        call create_asyncs(
+        call {:linear sps'} create_asyncs(
             (lambda {:pool "ReadPendingAsyncs"} pa: read_s ::
                 j+1 <= pa->perm->val->id && pa->perm->val->id <= NumMemIndices && pa->perm->val->val == s && pa->perm->val->ids == MemIndices()));
         call set_choice(choice);
