@@ -7,7 +7,7 @@ type Duration = int;
 
 // type Time = int;
 
-datatype Vote { YES(), NO() }
+datatype Vote { YES(), NO(), NULL() }
 
 datatype Decision { COMMIT(), ABORT(), NONE() }
 
@@ -23,20 +23,27 @@ var participant_votes: [Pid][Request]Vote;
 var committed_requests: [Cid](Set Request);
 var locked_durations: [Pid](Set Duration);
 var committed_durations: [Pid](Set Duration);
+var participant_decisions: [Pid][Request]Decision;
 
-action {:layer 2} skip(req: Request)
+function {:inline} Init(participant_votes: [Pid][Request]Vote, participant_decisions: [Pid][Request]Decision) : bool
 {
+  participant_votes == (lambda p:Pid :: (lambda r:Request  :: NULL())) &&
+  participant_decisions == (lambda p:Pid :: (lambda r:Request  :: NONE()))
 }
+
+yield invariant {:layer 1} YieldInit();
+invariant Init(participant_votes, participant_decisions); 
 
 yield procedure {:layer 1} coordinator(cid: Cid, req: Request)
 // refines skip;
+requires call YieldInit();
 {
    var i: int;
    var d: Decision;
    var v: Vote;
    d := COMMIT();
    async call main_f(req);
-   //wait for everyone to vote
+   call wait_for_participant_vote(req);
    i := 1;
    while (i <= n)
    {
@@ -49,7 +56,7 @@ yield procedure {:layer 1} coordinator(cid: Cid, req: Request)
     i := i + 1;
    }
    async call main_s(d, req);
-   //wait for everyone to acknowledge or update their global vars
+   call wait_for_participant_decision(req);
    if (d == COMMIT()) {
         assert {:layer 1} !(exists cid: Cid :: Set_Contains(committed_durations[cid], req->duration));
         call add_to_committed_durations(cid, req);
@@ -78,6 +85,20 @@ action {:layer 1,2} RECEIVE_VOTE(pid: Pid, req: Request) returns (v: Vote)
 }
 yield procedure {:layer 0} receive_vote(pid: Pid, req: Request) returns (v: Vote);
 refines RECEIVE_VOTE;
+
+action {:layer 1,2} WAIT_FOR_PARTICIPANT_DECISION(req: Request)
+{
+      assume (forall pid: Pid :: (1 <= pid && pid <= n) ==> participant_decisions[pid][req] != NONE());
+}
+yield procedure {:layer 0} wait_for_participant_decision(req: Request); 
+refines WAIT_FOR_PARTICIPANT_DECISION;
+
+action {:layer 1,2} WAIT_FOR_PARTICIPANT_VOTE(req: Request)
+{
+      assume (forall pid: Pid :: (1 <= pid && pid <= n) ==> participant_votes[pid][req] != NULL());
+}
+yield procedure {:layer 0} wait_for_participant_vote(req: Request); 
+refines WAIT_FOR_PARTICIPANT_VOTE;
 
 async action {:layer 1,2} voting(req: Request, pid: Pid)
 modifies locked_durations, participant_votes;
